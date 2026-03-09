@@ -1,83 +1,93 @@
 #!/usr/bin/env python3
 """
-Evaluation script for BIOVISION-AI.
-
+Evaluate skin lesion classifier: metrics, confusion matrix, ROC, PR curves.
 Usage:
-    python scripts/evaluate.py --checkpoint checkpoints/best.pt --data_dir /path/to/test
+  python scripts/evaluate.py --config configs/default.yaml --checkpoint checkpoints/classification/best.pt
 """
 
-from __future__ import annotations
-
 import argparse
-import json
+import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import numpy as np
 import torch
-from torch.utils.data import DataLoader
 
-from biovision_ai.config import load_config, get_default_config
-from biovision_ai.data import LesionDataset, get_dermoscopy_transforms, collate_lesion_batch
-from biovision_ai.models import BioVisionModel
-from biovision_ai.training.evaluation import evaluate_model
+from utils.config import load_config
+from data.datasets.skin_lesion import get_dataloaders
+from models.classification.efficientnet_classifier import SkinLesionClassifier
+from evaluation.metrics import compute_classification_metrics, classification_report_dict
+from evaluation.plots import plot_confusion_matrix, plot_roc_curves, plot_pr_curves
 
 
-def main() -> None:
+CLASS_NAMES = ["akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"]
+
+
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--data_dir", type=str, default=None)
-    parser.add_argument("--output", type=str, default="eval_results.json")
+    parser.add_argument("--config", type=str, default="configs/default.yaml")
+    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, default="evaluation_outputs")
+    parser.add_argument("--data_root", type=str, default=None)
     args = parser.parse_args()
 
-    config = get_default_config()
-    if args.config:
-        config = load_config(args.config)
-
-    model = BioVisionModel(
-        dermoscopy_backbone=config["model"]["dermoscopy_backbone"],
-        clinical_backbone=config["model"]["clinical_backbone"],
-        dermoscopy_embed_dim=config["model"]["dermoscopy_embed_dim"],
-        clinical_embed_dim=config["model"]["clinical_embed_dim"],
-        clinical_data_embed_dim=config["model"]["clinical_data_embed_dim"],
-        num_clinical_features=config["data"]["num_clinical_features"],
-        fusion_type=config["model"]["fusion_type"],
-        fusion_hidden_dim=config["model"]["fusion_hidden_dim"],
-        num_diagnosis_classes=config["model"]["num_diagnosis_classes"],
-        risk_levels=config["model"]["risk_levels"],
-        num_stages=len(config["model"]["stage_labels"]),
-        num_trends=len(config["model"]["trend_labels"]),
-        heads_config=config["model"]["heads"],
-        pretrained=False,
-    )
-
-    if args.checkpoint and Path(args.checkpoint).exists():
-        state = torch.load(args.checkpoint, map_location="cpu")
-        if isinstance(state, dict) and "model_state_dict" in state:
-            model.load_state_dict(state["model_state_dict"], strict=False)
-        else:
-            model.load_state_dict(state, strict=False)
-        print(f"Loaded checkpoint from {args.checkpoint}")
+    config = load_config(args.config)
+    if args.data_root:
+        config["data"]["root"] = args.data_root
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    data_cfg = config["data"]
+    clf_cfg = config["classification"]
+
+    _, _, test_loader, _, _, _ = get_dataloaders(
+        data_root=data_cfg["root"],
+        batch_size=data_cfg["batch_size"],
+        num_workers=data_cfg.get("num_workers", 4),
+        train_ratio=data_cfg["train_ratio"],
+        val_ratio=data_cfg["val_ratio"],
+        test_ratio=data_cfg["test_ratio"],
+        image_size=(data_cfg["image_size"], data_cfg["image_size"]),
+        seed=config.get("seed", 42),
+    )
+
+    model = SkinLesionClassifier(
+        num_classes=clf_cfg["num_classes"],
+        backbone=clf_cfg.get("backbone", "efficientnet_b0"),
+        pretrained=False,
+    ).to(device)
+    ckpt = torch.load(args.checkpoint, map_location=device)
+    model.load_state_dict(ckpt["model_state_dict"], strict=True)
     model.eval()
 
-    # TODO: Load real test dataset from args.data_dir
-    # For now, create minimal dummy
-    if args.data_dir and Path(args.data_dir).exists():
-        # Placeholder: implement ISIC/test loader
-        raise NotImplementedError("Implement data_dir loader for your dataset format")
-    else:
-        from biovision_ai.data.dummy import create_dummy_lesion_dataset
-        test_ds = create_dummy_lesion_dataset(20)
-        loader = DataLoader(
-            test_ds,
-            batch_size=8,
-            shuffle=False,
-            collate_fn=collate_lesion_batch,
-        )
-        results = evaluate_model(model, loader, device)
-        with open(args.output, "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"Results saved to {args.output}")
-        print(json.dumps(results, indent=2))
+    all_preds, all_labels, all_probs = [], [], []
+    with torch.no_grad():
+        for batch in test_loader:
+            x = batch["image"].to(device)
+            y = batch["label"]
+            logits = model(x)
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
+            preds = logits.argmax(dim=1).cpu().numpy()
+            all_preds.extend(preds)
+            all_labels.extend(y.numpy())
+            all_probs.extend(probs)
+
+    y_true = np.array(all_labels)
+    y_pred = np.array(all_preds)
+    y_prob = np.array(all_probs)
+
+    metrics = compute_classification_metrics(y_true, y_pred, y_prob, class_names=CLASS_NAMES)
+    print("Metrics:", metrics)
+    report = classification_report_dict(y_true, y_pred, CLASS_NAMES)
+    print("Classification report:", report)
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plot_confusion_matrix(np.array(metrics["confusion_matrix"]), CLASS_NAMES, save_path=str(out_dir / "confusion_matrix.png"))
+    plot_roc_curves(y_true, y_prob, CLASS_NAMES, save_path=str(out_dir / "roc_curves.png"))
+    plot_pr_curves(y_true, y_prob, CLASS_NAMES, save_path=str(out_dir / "pr_curves.png"))
+    print(f"Plots saved to {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

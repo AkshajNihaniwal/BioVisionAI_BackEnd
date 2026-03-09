@@ -1,104 +1,145 @@
 #!/usr/bin/env python3
 """
-Training script for BIOVISION-AI.
-
+Train skin lesion classifier (and optionally segmentation).
 Usage:
-    python scripts/train.py --config config/default.yaml
-    python scripts/train.py --data_dir /path/to/isic --epochs 50
+  python scripts/train.py --config configs/default.yaml
+  python scripts/train.py --config configs/classification.yaml --data_root ./data
 """
 
-from __future__ import annotations
-
 import argparse
+import sys
 from pathlib import Path
 
+# Add project root
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import torch
-from torch.utils.data import DataLoader
+import torch.nn as nn
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from biovision_ai.config import load_config, get_default_config
-from biovision_ai.data import collate_lesion_batch
-from biovision_ai.data.dummy import create_dummy_lesion_dataset
-from biovision_ai.models import BioVisionModel
-from biovision_ai.training import Trainer
-from biovision_ai.utils.logging import setup_logging
+from utils.config import load_config
+from utils.logger import setup_logger
+from data.datasets.skin_lesion import get_dataloaders
+from models.classification.efficientnet_classifier import SkinLesionClassifier
+from models.segmentation.unet import UNet
+from training.losses import DiceBCELoss, FocalLoss
 
 
+CLASS_NAMES = [
+    "akiec", "bcc", "bkl", "df", "mel", "nv", "vasc"
+]
 
 
-def main() -> None:
+def train_classification(config: dict):
+    logger = setup_logger("train")
+    device = torch.device(config.get("device", "cuda") if torch.cuda.is_available() else "cpu")
+    data_cfg = config["data"]
+    clf_cfg = config["classification"]
+
+    train_loader, val_loader, test_loader, _, _, _ = get_dataloaders(
+        data_root=data_cfg["root"],
+        batch_size=data_cfg["batch_size"],
+        num_workers=data_cfg.get("num_workers", 4),
+        train_ratio=data_cfg["train_ratio"],
+        val_ratio=data_cfg["val_ratio"],
+        test_ratio=data_cfg["test_ratio"],
+        image_size=(data_cfg["image_size"], data_cfg["image_size"]),
+        seed=config.get("seed", 42),
+    )
+
+    model = SkinLesionClassifier(
+        num_classes=clf_cfg["num_classes"],
+        backbone=clf_cfg.get("backbone", "efficientnet_b0"),
+        pretrained=clf_cfg.get("pretrained", True),
+    ).to(device)
+
+    if clf_cfg.get("use_class_weights"):
+        from collections import Counter
+        labels = []
+        for b in train_loader:
+            labels.extend(b["label"].tolist())
+        counts = Counter(labels)
+        total = sum(counts.values())
+        weights = torch.tensor([total / (clf_cfg["num_classes"] * counts.get(i, 1)) for i in range(clf_cfg["num_classes"])], dtype=torch.float32).to(device)
+    else:
+        weights = None
+
+    if clf_cfg.get("loss") == "focal":
+        criterion = FocalLoss(gamma=clf_cfg.get("focal_gamma", 2.0), weight=weights)
+    else:
+        criterion = nn.CrossEntropyLoss(weight=weights)
+
+    optimizer = AdamW(model.parameters(), lr=clf_cfg["lr"], weight_decay=clf_cfg.get("weight_decay", 0.01))
+    scheduler = CosineAnnealingLR(optimizer, T_max=clf_cfg["epochs"])
+    checkpoint_dir = Path(clf_cfg["checkpoint_dir"])
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    best_acc = 0.0
+    patience = clf_cfg.get("early_stopping_patience", 10)
+    patience_counter = 0
+
+    for epoch in range(clf_cfg["epochs"]):
+        model.train()
+        train_loss = 0.0
+        for batch in train_loader:
+            x = batch["image"].to(device)
+            y = batch["label"].to(device)
+            optimizer.zero_grad()
+            logits = model(x)
+            loss = criterion(logits, y)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            train_loss += loss.item()
+        scheduler.step()
+        train_loss /= len(train_loader)
+
+        model.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for batch in val_loader:
+                x = batch["image"].to(device)
+                y = batch["label"].to(device)
+                logits = model(x)
+                pred = logits.argmax(dim=1)
+                correct += (pred == y).sum().item()
+                total += y.size(0)
+        val_acc = correct / total if total else 0
+        logger.info(f"Epoch {epoch+1}/{clf_cfg['epochs']} train_loss={train_loss:.4f} val_acc={val_acc:.4f}")
+
+        if val_acc > best_acc:
+            best_acc = val_acc
+            patience_counter = 0
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_acc": val_acc,
+                "config": config,
+            }, checkpoint_dir / "best.pt")
+            logger.info(f"Saved best model (val_acc={val_acc:.4f})")
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                logger.info(f"Early stopping at epoch {epoch+1}")
+                break
+
+    logger.info("Training complete.")
+    return model
+
+
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--data_dir", type=str, default=None)
-    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
-    parser.add_argument("--epochs", type=int, default=None)
-    parser.add_argument("--batch_size", type=int, default=None)
-    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--config", type=str, default="configs/default.yaml")
+    parser.add_argument("--data_root", type=str, default=None)
     args = parser.parse_args()
 
-    setup_logging()
-    config = get_default_config()
-    if args.config:
-        config = load_config(args.config)
+    config = load_config(args.config)
+    if args.data_root:
+        config["data"]["root"] = args.data_root
 
-    if args.epochs:
-        config["training"]["num_epochs"] = args.epochs
-    if args.batch_size:
-        config["training"]["batch_size"] = args.batch_size
-    if args.lr:
-        config["training"]["learning_rate"] = args.lr
-
-    # TODO: Load real dataset from args.data_dir (ISIC, etc.)
-    # For now use dummy
-    train_ds = create_dummy_lesion_dataset(100)
-    val_ds = create_dummy_lesion_dataset(20)
-
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=config["training"]["batch_size"],
-        shuffle=True,
-        num_workers=0,
-        collate_fn=collate_lesion_batch,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=config["training"]["batch_size"],
-        shuffle=False,
-        num_workers=0,
-        collate_fn=collate_lesion_batch,
-    )
-
-    model = BioVisionModel(
-        dermoscopy_backbone=config["model"]["dermoscopy_backbone"],
-        clinical_backbone=config["model"]["clinical_backbone"],
-        dermoscopy_embed_dim=config["model"]["dermoscopy_embed_dim"],
-        clinical_embed_dim=config["model"]["clinical_embed_dim"],
-        clinical_data_embed_dim=config["model"]["clinical_data_embed_dim"],
-        num_clinical_features=config["data"]["num_clinical_features"],
-        fusion_type=config["model"]["fusion_type"],
-        fusion_hidden_dim=config["model"]["fusion_hidden_dim"],
-        num_diagnosis_classes=config["model"]["num_diagnosis_classes"],
-        risk_levels=config["model"]["risk_levels"],
-        num_stages=len(config["model"]["stage_labels"]),
-        num_trends=len(config["model"]["trend_labels"]),
-        heads_config=config["model"]["heads"],
-        segmentation_enabled=config["model"]["segmentation_enabled"],
-        pretrained=True,
-    )
-
-    trainer = Trainer(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        learning_rate=config["training"]["learning_rate"],
-        weight_decay=config["training"]["weight_decay"],
-        num_epochs=config["training"]["num_epochs"],
-        focal_gamma=config["training"].get("focal_loss_gamma", 2.0),
-        heads_config=config["model"]["heads"],
-        checkpoint_dir=Path(args.checkpoint_dir),
-    )
-
-    trainer.train()
-    print("Training complete.")
+    train_classification(config)
 
 
 if __name__ == "__main__":
