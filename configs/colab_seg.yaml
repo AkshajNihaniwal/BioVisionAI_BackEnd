@@ -1,0 +1,48 @@
+seed: 42
+device: cuda
+
+# Used directly by scripts/train_segmentation.py
+data:
+  root: /content/drive/MyDrive/pbl_ham10000
+  image_size: 256
+  batch_size: 16
+  num_workers: 0
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  class_names:
+    - akiec
+    - bcc
+    - bkl
+    - df
+    - mel
+    - nv
+    - vasc
+  num_classes: 7
+
+segmentation:
+  enabled: true
+  model: unet
+  in_channels: 3
+  out_channels: 1
+  epochs: 50
+  lr: 0.001
+  loss: dice_bce
+  checkpoint_dir: /content/drive/MyDrive/BioVisionAI_BackEnd/checkpoints/segmentation
+
+# Extra metadata block (as requested template)
+dataset:
+  images_dir: /content/drive/MyDrive/pbl_ham10000/images
+  masks_dir: /content/drive/MyDrive/pbl_ham10000/masks
+  size: [256, 256]
+  strict: false
+
+training:
+  epochs: 50
+  batch_size: 16
+  learning_rate: 0.001
+
+model:
+  name: unet
+  encoder: efficientnetb0
+  pretrained: true
