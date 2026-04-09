@@ -91,7 +91,19 @@ def main():
     ckpt_dir = Path(seg_cfg.get("checkpoint_dir", "checkpoints/segmentation"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(seg_cfg.get("epochs", 50)):
+    ckpt_path = ckpt_dir / "latest.pt"
+    start_epoch = 0
+
+    if ckpt_path.exists():
+        checkpoint = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        start_epoch = checkpoint["epoch"] + 1
+
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        logger.info(f"Resuming training from epoch {start_epoch}")
+
+    for epoch in range(start_epoch, seg_cfg.get("epochs", 50)):
         model.train()
         total_loss = 0.0
         total_dice = 0.0
@@ -178,7 +190,11 @@ def main():
                 avg_iou,
                 avg_acc,
             )
-        torch.save({"epoch": epoch, "model_state_dict": model.state_dict()}, ckpt_dir / "latest.pt")
+        torch.save({
+            "epoch": start_epoch + epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        }, ckpt_dir / "latest.pt")
 
     logger.info("Segmentation training done.")
 
