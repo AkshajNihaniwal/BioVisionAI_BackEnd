@@ -12,7 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 from torch.optim import Adam
-from torch.utils.data import DataLoader
 
 from utils.config import load_config
 from utils.logger import setup_logger
@@ -190,11 +189,15 @@ def main():
                 avg_iou,
                 avg_acc,
             )
-        torch.save({
-            "epoch": start_epoch + epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-        }, ckpt_dir / "latest.pt")
+        torch.save(
+            {
+                # Loop variable `epoch` is the last completed epoch index (0-based).
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+            },
+            ckpt_dir / "latest.pt",
+        )
 
     logger.info("Segmentation training done.")
 
