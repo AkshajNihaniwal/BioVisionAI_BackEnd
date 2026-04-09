@@ -226,14 +226,22 @@ def get_dataloaders(
         out = []
         for p in img_paths:
             base = Path(p).stem
+            # First try ISIC segmentation naming
             for ext in [".png", ".jpg"]:
-                m = root / mask_d / (base + ext)
+                m = root / mask_d / (base + "_segmentation" + ext)
                 if m.exists():
                     out.append(str(m))
                     break
             else:
-                out.append(None)
-        return out
+                # fallback to normal naming (optional safety)
+                for ext in [".png", ".jpg"]:
+                    m = root / mask_d / (base + ext)
+                    if m.exists():
+                        out.append(str(m))
+                        break
+                else:
+                    out.append(None)
+            return out
 
     root = Path(data_root)
     train_masks = _mask_paths(train_paths, root, mask_dir)
