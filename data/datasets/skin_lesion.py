@@ -70,7 +70,7 @@ class SkinLesionDataset(Dataset):
         label = self.labels[idx]
 
         out = {"image": image, "label": label, "path": path}
-        if self.mask_paths and self.mask_paths[idx]:
+        if self.mask_paths is not None and idx < len(self.mask_paths) and self.mask_paths[idx] is not None:
             mask_path = self.mask_paths[idx]
             mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
             if mask is not None:
