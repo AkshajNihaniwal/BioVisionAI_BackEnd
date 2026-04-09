@@ -21,6 +21,31 @@ from models.segmentation.unet import UNet
 from training.losses import DiceBCELoss
 
 
+def segmentation_batch_metrics(
+    pred_probs: torch.Tensor,
+    true_masks: torch.Tensor,
+    threshold: float = 0.5,
+    eps: float = 1e-6,
+):
+    """Compute Dice, IoU, and pixel accuracy for a batch of binary masks."""
+    pred_bin = (pred_probs > threshold).float()
+    true_bin = true_masks.float()
+
+    pred_flat = pred_bin.view(pred_bin.size(0), -1)
+    true_flat = true_bin.view(true_bin.size(0), -1)
+
+    intersection = (pred_flat * true_flat).sum(dim=1)
+    pred_sum = pred_flat.sum(dim=1)
+    true_sum = true_flat.sum(dim=1)
+    union = pred_sum + true_sum - intersection
+
+    dice = (2.0 * intersection + eps) / (pred_sum + true_sum + eps)
+    iou = (intersection + eps) / (union + eps)
+    acc = (pred_flat == true_flat).float().mean(dim=1)
+
+    return dice.mean(), iou.mean(), acc.mean()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
@@ -69,6 +94,9 @@ def main():
     for epoch in range(seg_cfg.get("epochs", 50)):
         model.train()
         total_loss = 0.0
+        total_dice = 0.0
+        total_iou = 0.0
+        total_acc = 0.0
         n_batches = 0
         for batch in train_loader:
             x = batch["image"].to(device)
@@ -81,13 +109,75 @@ def main():
             loss = criterion(pred, mask)
             loss.backward()
             optimizer.step()
+
+            with torch.no_grad():
+                # UNet currently returns probabilities (sigmoid already applied).
+                pred_probs = pred.detach()
+                dice, iou, acc = segmentation_batch_metrics(pred_probs, mask)
+
             total_loss += loss.item()
+            total_dice += dice.item()
+            total_iou += iou.item()
+            total_acc += acc.item()
             n_batches += 1
         if n_batches == 0:
             logger.info("No batches with masks; skipping segmentation training.")
             break
-        avg = total_loss / n_batches
-        logger.info("Epoch %d seg_loss=%.4f", epoch + 1, avg)
+
+        avg_loss = total_loss / n_batches
+        avg_dice = total_dice / n_batches
+        avg_iou = total_iou / n_batches
+        avg_acc = total_acc / n_batches
+
+        model.eval()
+        val_total_loss = 0.0
+        val_total_dice = 0.0
+        val_total_iou = 0.0
+        val_total_acc = 0.0
+        val_batches = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                x = batch["image"].to(device)
+                mask = batch.get("mask")
+                if mask is None:
+                    continue
+                mask = mask.to(device)
+                pred = model(x)
+                loss = criterion(pred, mask)
+                dice, iou, acc = segmentation_batch_metrics(pred, mask)
+
+                val_total_loss += loss.item()
+                val_total_dice += dice.item()
+                val_total_iou += iou.item()
+                val_total_acc += acc.item()
+                val_batches += 1
+
+        if val_batches > 0:
+            val_loss = val_total_loss / val_batches
+            val_dice = val_total_dice / val_batches
+            val_iou = val_total_iou / val_batches
+            val_acc = val_total_acc / val_batches
+            logger.info(
+                "Epoch %d seg_loss=%.4f dice=%.4f iou=%.4f acc=%.4f val_seg_loss=%.4f val_dice=%.4f val_iou=%.4f val_acc=%.4f",
+                epoch + 1,
+                avg_loss,
+                avg_dice,
+                avg_iou,
+                avg_acc,
+                val_loss,
+                val_dice,
+                val_iou,
+                val_acc,
+            )
+        else:
+            logger.info(
+                "Epoch %d seg_loss=%.4f dice=%.4f iou=%.4f acc=%.4f",
+                epoch + 1,
+                avg_loss,
+                avg_dice,
+                avg_iou,
+                avg_acc,
+            )
         torch.save({"epoch": epoch, "model_state_dict": model.state_dict()}, ckpt_dir / "latest.pt")
 
     logger.info("Segmentation training done.")
