@@ -241,7 +241,7 @@ def get_dataloaders(
                         break
                 else:
                     out.append(None)
-            return out
+        return out
 
     root = Path(data_root)
     train_masks = _mask_paths(train_paths, root, mask_dir)
