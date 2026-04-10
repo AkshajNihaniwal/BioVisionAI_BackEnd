@@ -78,19 +78,17 @@ class SkinLesionDataset(Dataset):
                 out["mask"] = mask
             else:
                 out["mask"] = np.zeros((image.shape[0], image.shape[1]), dtype=np.float32)
-        else:
-            out["mask"] = None
+        # No mask: omit key — default_collate cannot batch None (breaks classification).
 
         if self.transform:
-            if out["mask"] is not None and out["mask"].size > 0:
+            if out.get("mask") is not None and out["mask"].size > 0:
                 transformed = self.transform(image=image, mask=out["mask"])
                 out["image"] = transformed["image"]
                 out["mask"] = transformed["mask"]
             else:
                 transformed = self.transform(image=image)
                 out["image"] = transformed["image"]
-                if out["mask"] is not None:
-                    out["mask"] = None  # drop mask if not transformed
+                out.pop("mask", None)
 
         if not isinstance(out["image"], torch.Tensor):
             out["image"] = torch.from_numpy(np.asarray(out["image"]).transpose(2, 0, 1)).float()
