@@ -137,7 +137,7 @@ def load_metadata_and_paths(
     """
     root = Path(data_root)
     if metadata_file is None:
-        for name in ["metadata.csv", "HAM10000_metadata.csv", "ISIC_metadata.csv", "labels.csv"]:
+        for name in ["HAM10000_metadata.csv", "HAM10000_metadata.csv", "ISIC_metadata.csv", "labels.csv"]:
             if (root / name).exists():
                 metadata_file = name
                 break
