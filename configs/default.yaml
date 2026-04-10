@@ -47,7 +47,7 @@ segmentation:
   model: unet
   in_channels: 3
   out_channels: 1
-  epochs: 35
+  epochs: 23
   lr: 1e-4
   loss: dice_bce  # dice + binary cross entropy
   checkpoint_dir: ./checkpoints/segmentation

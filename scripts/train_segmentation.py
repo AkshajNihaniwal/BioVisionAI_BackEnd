@@ -108,7 +108,7 @@ def main():
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         logger.info(f"Resuming training from epoch {start_epoch}")
 
-    for epoch in range(start_epoch, seg_cfg.get("epochs", 35)):
+    for epoch in range(start_epoch, seg_cfg.get("epochs", 23)):
         model.train()
         total_loss = 0.0
         total_dice = 0.0
