@@ -1,0 +1,28 @@
+# Google Colab: classification training (HAM10000-style layout).
+# Edit `data.root` and `classification.checkpoint_dir` to match your Drive paths.
+
+seed: 42
+device: cuda
+
+data:
+  root: /content/drive/MyDrive/pbl_ham10000
+  image_size: 224
+  batch_size: 32
+  num_workers: 0
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+  num_classes: 7
+
+classification:
+  backbone: efficientnet_b0
+  num_classes: 7
+  pretrained: true
+  epochs: 20
+  lr: 1e-4
+  weight_decay: 0.01
+  loss: focal
+  focal_gamma: 2.0
+  use_class_weights: true
+  checkpoint_dir: /content/drive/MyDrive/BioVisionAI_BackEnd/checkpoints/classification
+  early_stopping_patience: 10
