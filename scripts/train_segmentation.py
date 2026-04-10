@@ -19,6 +19,9 @@ from data.datasets.skin_lesion import get_dataloaders
 from models.segmentation.unet import UNet
 from training.losses import DiceBCELoss
 
+# Colab: checkpoints when Google Drive is mounted (edit if your Drive layout differs).
+_COLAB_SEG_CHECKPOINT_DIR = Path("/content/drive/MyDrive/BioVisionAI_BackEnd/checkpoints/segmentation")
+
 
 def segmentation_batch_metrics(
     pred_probs: torch.Tensor,
@@ -87,7 +90,10 @@ def main():
     ).to(device)
     criterion = DiceBCELoss(dice_weight=0.5, bce_weight=0.5)
     optimizer = Adam(model.parameters(), lr=seg_cfg.get("lr", 1e-4))
-    ckpt_dir = Path(seg_cfg.get("checkpoint_dir", "checkpoints/segmentation"))
+    if Path("/content/drive/MyDrive").exists():
+        ckpt_dir = _COLAB_SEG_CHECKPOINT_DIR
+    else:
+        ckpt_dir = Path(seg_cfg.get("checkpoint_dir", "checkpoints/segmentation"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     ckpt_path = ckpt_dir / "latest.pt"
