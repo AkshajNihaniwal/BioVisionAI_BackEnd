@@ -17,7 +17,7 @@ classification:
   backbone: efficientnet_b0
   num_classes: 7
   pretrained: true
-  epochs: 50
+  epochs: 20
   lr: 1e-4
   weight_decay: 0.01
   loss: focal
